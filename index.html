@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nyomtatási Adatok Kezelő</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="app-header">
+    <h1>🖨️ Nyomtatási <span>Adatok</span></h1>
+    <div class="header-actions">
+        <button class="btn btn-ghost btn-sm" onclick="exportData()">📥 Export JSON</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('importFile').click()">📤 Import</button>
+        <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(event)">
+    </div>
+</header>
+
+<div class="main-container">
+
+    <!-- HOME SCREEN -->
+    <div id="homeView" class="view active">
+        <div class="home-screen">
+            <div class="home-logo">🖨️</div>
+            <div class="home-buttons">
+                <button class="home-btn" onclick="showView('addView')">
+                    <div class="icon">➕</div>
+                    <div class="label">Adatrögzítés</div>
+                </button>
+                <button class="home-btn" onclick="showView('queryView')">
+                    <div class="icon">🔍</div>
+                    <div class="label">Lekérdezés</div>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ADATRÖGZÍTÉS VIEW -->
+    <div id="addView" class="view">
+        <div class="view-header">
+            <button class="back-btn" onclick="showView('homeView')">←</button>
+            <h2>Adatrögzítés</h2>
+        </div>
+
+        <!-- Termék alap -->
+        <div class="form-section">
+            <div class="form-section-title">Termék adatok</div>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Termék neve</label>
+                    <input type="text" id="addTermekNev" placeholder="Pl. Produkt XY">
+                </div>
+                <div class="form-group">
+                    <label>Cikkszám</label>
+                    <input type="text" id="addCikkszam" placeholder="Pl. AB1234">
+                </div>
+            </div>
+        </div>
+
+        <!-- Nyomások -->
+        <div id="nyomasokContainer"></div>
+
+        <div style="display:flex; gap:10px; margin-bottom:20px;">
+            <button class="btn btn-secondary" onclick="addNyomasCard()">+ Nyomás hozzáadása</button>
+        </div>
+
+        <div style="display:flex; gap:10px;">
+            <button class="btn btn-primary" onclick="saveTermek()">💾 Mentés</button>
+            <button class="btn btn-secondary" onclick="clearAddForm()">🗑️ Törlés</button>
+        </div>
+    </div>
+
+    <!-- LEKÉRDEZÉS VIEW -->
+    <div id="queryView" class="view">
+        <div class="view-header">
+            <button class="back-btn" onclick="showView('homeView')">←</button>
+            <h2>Lekérdezés</h2>
+        </div>
+
+        <!-- Admin bar -->
+        <div class="admin-bar">
+            <input type="password" id="adminPw" placeholder="Admin jelszó">
+            <button class="btn btn-sm btn-secondary" onclick="adminLogin()">Belépés</button>
+            <span id="adminStatus" class="admin-status">Nincs bejelentkezve</span>
+        </div>
+
+        <div class="search-bar">
+            <input type="text" id="searchInput" placeholder="Keresés termék név vagy cikkszám alapján..." onkeyup="if(event.key==='Enter')searchProducts()">
+            <button class="btn btn-primary" onclick="searchProducts()">Keresés</button>
+        </div>
+
+        <div id="searchResults"></div>
+        <div id="detailPanel"></div>
+    </div>
+
+</div>
+
+<!-- EDIT MODAL (hidden) -->
+<div id="editOverlay" class="edit-overlay" style="display:none">
+    <div class="edit-modal">
+        <h3>✏️ Nyomás módosítása</h3>
+        <div id="editFormContent"></div>
+        <div class="edit-actions">
+            <button class="btn btn-secondary" onclick="closeEditModal()">Mégse</button>
+            <button class="btn btn-primary" onclick="saveEdit()">Mentés</button>
+        </div>
+    </div>
+</div>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+<script>
+// ============================================
+// FIREBASE CONFIG - CSERÉLD KI!
+// ============================================
+const firebaseConfig = {
+    apiKey: "YOUR_API_KEY_HERE",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "000000000000",
+    appId: "YOUR_APP_ID"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+// ============================================
+// STATE
+// ============================================
+let isAdmin = false;
+const ADMIN_PASS = "admin123"; // Változtasd meg!
+let nyomasCount = 0;
+let currentEditCikkszam = null;
+let currentEditNyomasIndex = null;
+
+// Fix listák - később Firestore-ból is húzhatod
+const LISTS = {
+    rakelTipus: ["Gömbölyű", "Normál", "Éles"],
+    kesleltetoTipus: ["(töltsd fel)"],
+    higitoTipus: ["(töltsd fel)"],
+    pasztaTipus: ["(töltsd fel)"]
+};
+
+// ============================================
+// NAVIGATION
+// ============================================
+function showView(viewId) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById(viewId).classList.add('active');
+    if (viewId === 'addView' && nyomasCount === 0) addNyomasCard();
+    if (viewId === 'queryView') {
+        document.getElementById('searchResults').innerHTML = '';
+        document.getElementById('detailPanel').innerHTML = '';
+    }
+}
+
+// ============================================
+// TOAST
+// ============================================
+function toast(msg, type = 'success') {
+    const t = document.createElement('div');
+    t.className = `toast ${type}`;
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 3200);
+}
+
+// ============================================
+// HELPER: Build select options
+// ============================================
+function buildOptions(list, selected = '') {
+    let html = '<option value="">-- válassz --</option>';
+    list.forEach(item => {
+        html += `<option value="${item}" ${item === selected ? 'selected' : ''}>${item}</option>`;
+    });
+    return html;
+}
+
+// ============================================
+// ADATRÖGZÍTÉS - Nyomás kártyák
+// ============================================
+function addNyomasCard() {
+    nyomasCount++;
+    const idx = nyomasCount;
+    const card = document.createElement('div');
+    card.className = 'nyomas-card';
+    card.id = `nyomasCard_${idx}`;
+    card.innerHTML = `
+        <div class="nyomas-card-header">
+            <span class="nyomas-badge">Nyomás #${idx}</span>
+            <button class="nyomas-remove" onclick="removeNyomasCard(${idx})" title="Törlés">×</button>
+        </div>
+        <div class="form-grid">
+            <div class="form-group">
+                <label>Töltő sebesség</label>
+                <input type="number" id="toltoSeb_${idx}" placeholder="mm/s">
+            </div>
+            <div class="form-group">
+                <label>Rakel sebesség</label>
+                <input type="number" id="rakelSeb_${idx}" placeholder="mm/s">
+            </div>
+            <div class="form-group">
+                <label>Rakel típus</label>
+                <select id="rakelTipus_${idx}">${buildOptions(LISTS.rakelTipus)}</select>
+            </div>
+            <div class="form-group">
+                <label>Késleltető típus</label>
+                <select id="kesleltetoTipus_${idx}">${buildOptions(LISTS.kesleltetoTipus)}</select>
+            </div>
+            <div class="form-group">
+                <label>Késleltető %</label>
+                <input type="number" id="keslelteto_${idx}" placeholder="%" step="0.1">
+            </div>
+            <div class="form-group">
+                <label>Hígító típus</label>
+                <select id="higitoTipus_${idx}">${buildOptions(LISTS.higitoTipus)}</select>
+            </div>
+            <div class="form-group">
+                <label>Hígító %</label>
+                <input type="number" id="higito_${idx}" placeholder="%" step="0.1">
+            </div>
+            <div class="form-group">
+                <label>Paszta típus</label>
+                <select id="pasztaTipus_${idx}">${buildOptions(LISTS.pasztaTipus)}</select>
+            </div>
+            <div class="form-group">
+                <label>Paszta %</label>
+                <input type="number" id="paszta_${idx}" placeholder="%" step="0.1">
+            </div>
+            <div class="form-group full-width">
+                <label>Mire kell figyelni</label>
+                <textarea id="figyelni_${idx}" placeholder="Fontos megjegyzések..."></textarea>
+            </div>
+            <div class="form-group">
+                <label>Volt-e selejt</label>
+                <select id="selejt_${idx}" onchange="toggleSelejtOka(${idx})">
+                    <option value="Nem">Nem</option>
+                    <option value="Igen">Igen</option>
+                </select>
+            </div>
+            <div class="form-group" id="selejtOkaGroup_${idx}" style="display:none">
+                <label>Selejt oka</label>
+                <textarea id="selejtOka_${idx}" placeholder="Mi okozta?"></textarea>
+            </div>
+        </div>
+    `;
+    document.getElementById('nyomasokContainer').appendChild(card);
+}
+
+function removeNyomasCard(idx) {
+    const card = document.getElementById(`nyomasCard_${idx}`);
+    if (card) card.remove();
+}
+
+function toggleSelejtOka(idx) {
+    const val = document.getElementById(`selejt_${idx}`).value;
+    document.getElementById(`selejtOkaGroup_${idx}`).style.display = val === 'Igen' ? 'block' : 'none';
+}
+
+function collectNyomasData() {
+    const nyomasok = [];
+    document.querySelectorAll('.nyomas-card').forEach((card, i) => {
+        const idx = card.id.split('_')[1];
+        nyomasok.push({
+            sorszam: i + 1,
+            toltoSeb: parseFloat(document.getElementById(`toltoSeb_${idx}`)?.value) || 0,
+            rakelSeb: parseFloat(document.getElementById(`rakelSeb_${idx}`)?.value) || 0,
+            rakelTipus: document.getElementById(`rakelTipus_${idx}`)?.value || '',
+            keslelteto: {
+                tipus: document.getElementById(`kesleltetoTipus_${idx}`)?.value || '',
+                szazalek: parseFloat(document.getElementById(`keslelteto_${idx}`)?.value) || 0
+            },
+            higito: {
+                tipus: document.getElementById(`higitoTipus_${idx}`)?.value || '',
+                szazalek: parseFloat(document.getElementById(`higito_${idx}`)?.value) || 0
+            },
+            paszta: {
+                tipus: document.getElementById(`pasztaTipus_${idx}`)?.value || '',
+                szazalek: parseFloat(document.getElementById(`paszta_${idx}`)?.value) || 0
+            },
+            figyelni: document.getElementById(`figyelni_${idx}`)?.value || '',
+            selejt: {
+                volt: document.getElementById(`selejt_${idx}`)?.value === 'Igen',
+                oka: document.getElementById(`selejtOka_${idx}`)?.value || ''
+            }
+        });
+    });
+    return nyomasok;
+}
+
+// ============================================
+// SAVE
+// ============================================
+async function saveTermek() {
+    const termekNev = document.getElementById('addTermekNev').value.trim();
+    const cikkszam = document.getElementById('addCikkszam').value.trim();
+
+    if (!termekNev || !cikkszam) {
+        toast('Termék neve és cikkszám kötelező!', 'error');
+        return;
+    }
+
+    const nyomasok = collectNyomasData();
+    if (nyomasok.length === 0) {
+        toast('Legalább egy nyomás kell!', 'error');
+        return;
+    }
+
+    const data = {
+        termekNev,
+        cikkszam,
+        nyomasok,
+        rogzites: {
+            datum: new Date().toISOString(),
+            rogzito: 'technológus'
+        },
+        utolsoModositas: new Date().toISOString()
+    };
+
+    try {
+        // Cikkszám mint document ID
+        await db.collection('termekek').doc(cikkszam).set(data, { merge: true });
+        toast(`Mentve: ${termekNev} (${cikkszam}) - ${nyomasok.length} nyomás`);
+        clearAddForm();
+        showView('homeView');
+    } catch (err) {
+        toast('Hiba mentéskor: ' + err.message, 'error');
+        console.error(err);
+    }
+}
+
+function clearAddForm() {
+    document.getElementById('addTermekNev').value = '';
+    document.getElementById('addCikkszam').value = '';
+    document.getElementById('nyomasokContainer').innerHTML = '';
+    nyomasCount = 0;
+}
+
+// ============================================
+// SEARCH / QUERY
+// ============================================
+async function searchProducts() {
+    const query = document.getElementById('searchInput').value.trim().toLowerCase();
+    const resultsDiv = document.getElementById('searchResults');
+    const detailDiv = document.getElementById('detailPanel');
+    detailDiv.innerHTML = '';
+
+    try {
+        const snapshot = await db.collection('termekek').get();
+        let results = [];
+
+        snapshot.forEach(doc => {
+            const d = doc.data();
+            if (!query ||
+                d.termekNev.toLowerCase().includes(query) ||
+                d.cikkszam.toLowerCase().includes(query)) {
+                results.push({ id: doc.id, ...d });
+            }
+        });
+
+        if (results.length === 0) {
+            resultsDiv.innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">🔍</div>
+                    <p>Nincs találat${query ? ` "${query}" keresésre` : ''}</p>
+                </div>`;
+            return;
+        }
+
+        resultsDiv.innerHTML = results.map(r => `
+            <div class="result-card" onclick="showDetail('${r.cikkszam}')">
+                <div class="result-card-info">
+                    <div class="result-card-title">${r.termekNev}</div>
+                    <div class="result-card-sub">${r.cikkszam} · ${r.nyomasok.length} nyomás</div>
+                </div>
+                <div class="result-card-actions">
+                    ${isAdmin ? `<button class="btn-icon" onclick="event.stopPropagation(); deleteTermek('${r.cikkszam}', '${r.termekNev}')" title="Törlés">🗑️</button>` : ''}
+                </div>
+            </div>
+        `).join('');
+    } catch (err) {
+        toast('Hiba kereséskor: ' + err.message, 'error');
+        console.error(err);
+    }
+}
+
+async function showDetail(cikkszam) {
+    const detailDiv = document.getElementById('detailPanel');
+    try {
+        const doc = await db.collection('termekek').doc(cikkszam).get();
+        if (!doc.exists) { toast('Nem található', 'error'); return; }
+
+        const d = doc.data();
+        let nyomasokHTML = d.nyomasok.map((ny, i) => `
+            <div class="nyomas-detail">
+                <div class="nyomas-detail-header">
+                    <span class="nyomas-badge">Nyomás #${ny.sorszam}</span>
+                    ${isAdmin ? `<button class="btn-icon" onclick="openEditModal('${cikkszam}', ${i})" title="Módosítás">✏️</button>` : ''}
+                </div>
+                <div class="detail-grid">
+                    <div class="detail-item">
+                        <span class="label">Töltő seb.</span>
+                        <span class="value">${ny.toltoSeb}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Rakel seb.</span>
+                        <span class="value">${ny.rakelSeb}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Rakel típus</span>
+                        <span class="value">${ny.rakelTipus}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Késleltető</span>
+                        <span class="value">${ny.keslelteto.tipus} (${ny.keslelteto.szazalek}%)</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Hígító</span>
+                        <span class="value">${ny.higito.tipus} (${ny.higito.szazalek}%)</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Paszta</span>
+                        <span class="value">${ny.paszta.tipus} (${ny.paszta.szazalek}%)</span>
+                    </div>
+                </div>
+                ${ny.figyelni ? `<div class="detail-note">⚠️ ${ny.figyelni}</div>` : ''}
+                ${ny.selejt.volt ? `<div class="detail-selejt">🚨 Selejt: ${ny.selejt.oka}</div>` : ''}
+            </div>
+        `).join('');
+
+        detailDiv.innerHTML = `
+            <div class="detail-panel">
+                <div class="detail-header">
+                    <div>
+                        <div class="detail-title">${d.termekNev}</div>
+                        <div class="detail-cikkszam">${d.cikkszam} · Rögzítve: ${new Date(d.rogzites.datum).toLocaleString('hu-HU')}</div>
+                    </div>
+                </div>
+                ${nyomasokHTML}
+            </div>
+        `;
+    } catch (err) {
+        toast('Hiba: ' + err.message, 'error');
+    }
+}
+
+// ============================================
+// ADMIN
+// ============================================
+function adminLogin() {
+    const pw = document.getElementById('adminPw').value;
+    if (pw === ADMIN_PASS) {
+        isAdmin = true;
+        document.getElementById('adminStatus').textContent = '✓ Bejelentkezve';
+        document.getElementById('adminStatus').className = 'admin-status active';
+        document.getElementById('adminPw').value = '';
+        toast('Admin belépés sikeres');
+    } else {
+        toast('Hibás jelszó!', 'error');
+    }
+}
+
+// ============================================
+// EDIT MODAL
+// ============================================
+async function openEditModal(cikkszam, nyomasIndex) {
+    if (!isAdmin) { toast('Admin jogosultság szükséges!', 'error'); return; }
+
+    currentEditCikkszam = cikkszam;
+    currentEditNyomasIndex = nyomasIndex;
+
+    const doc = await db.collection('termekek').doc(cikkszam).get();
+    const ny = doc.data().nyomasok[nyomasIndex];
+
+    document.getElementById('editFormContent').innerHTML = `
+        <div class="form-grid">
+            <div class="form-group">
+                <label>Töltő sebesség</label>
+                <input type="number" id="editToltoSeb" value="${ny.toltoSeb}">
+            </div>
+            <div class="form-group">
+                <label>Rakel sebesség</label>
+                <input type="number" id="editRakelSeb" value="${ny.rakelSeb}">
+            </div>
+            <div class="form-group">
+                <label>Rakel típus</label>
+                <select id="editRakelTipus">${buildOptions(LISTS.rakelTipus, ny.rakelTipus)}</select>
+            </div>
+            <div class="form-group">
+                <label>Késleltető típus</label>
+                <select id="editKesleltetoTipus">${buildOptions(LISTS.kesleltetoTipus, ny.keslelteto.tipus)}</select>
+            </div>
+            <div class="form-group">
+                <label>Késleltető %</label>
+                <input type="number" id="editKeslelteto" value="${ny.keslelteto.szazalek}" step="0.1">
+            </div>
+            <div class="form-group">
+                <label>Hígító típus</label>
+                <select id="editHigitoTipus">${buildOptions(LISTS.higitoTipus, ny.higito.tipus)}</select>
+            </div>
+            <div class="form-group">
+                <label>Hígító %</label>
+                <input type="number" id="editHigito" value="${ny.higito.szazalek}" step="0.1">
+            </div>
+            <div class="form-group">
+                <label>Paszta típus</label>
+                <select id="editPasztaTipus">${buildOptions(LISTS.pasztaTipus, ny.paszta.tipus)}</select>
+            </div>
+            <div class="form-group">
+                <label>Paszta %</label>
+                <input type="number" id="editPaszta" value="${ny.paszta.szazalek}" step="0.1">
+            </div>
+            <div class="form-group full-width">
+                <label>Mire kell figyelni</label>
+                <textarea id="editFigyelni">${ny.figyelni || ''}</textarea>
+            </div>
+            <div class="form-group">
+                <label>Volt-e selejt</label>
+                <select id="editSelejt">
+                    <option value="Nem" ${!ny.selejt.volt ? 'selected' : ''}>Nem</option>
+                    <option value="Igen" ${ny.selejt.volt ? 'selected' : ''}>Igen</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Selejt oka</label>
+                <textarea id="editSelejtOka">${ny.selejt.oka || ''}</textarea>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('editOverlay').style.display = 'flex';
+}
+
+function closeEditModal() {
+    document.getElementById('editOverlay').style.display = 'none';
+    currentEditCikkszam = null;
+    currentEditNyomasIndex = null;
+}
+
+async function saveEdit() {
+    if (!currentEditCikkszam || currentEditNyomasIndex === null) return;
+
+    try {
+        const doc = await db.collection('termekek').doc(currentEditCikkszam).get();
+        const data = doc.data();
+
+        data.nyomasok[currentEditNyomasIndex] = {
+            ...data.nyomasok[currentEditNyomasIndex],
+            toltoSeb: parseFloat(document.getElementById('editToltoSeb').value) || 0,
+            rakelSeb: parseFloat(document.getElementById('editRakelSeb').value) || 0,
+            rakelTipus: document.getElementById('editRakelTipus').value,
+            keslelteto: {
+                tipus: document.getElementById('editKesleltetoTipus').value,
+                szazalek: parseFloat(document.getElementById('editKeslelteto').value) || 0
+            },
+            higito: {
+                tipus: document.getElementById('editHigitoTipus').value,
+                szazalek: parseFloat(document.getElementById('editHigito').value) || 0
+            },
+            paszta: {
+                tipus: document.getElementById('editPasztaTipus').value,
+                szazalek: parseFloat(document.getElementById('editPaszta').value) || 0
+            },
+            figyelni: document.getElementById('editFigyelni').value,
+            selejt: {
+                volt: document.getElementById('editSelejt').value === 'Igen',
+                oka: document.getElementById('editSelejtOka').value
+            }
+        };
+
+        data.utolsoModositas = new Date().toISOString();
+
+        await db.collection('termekek').doc(currentEditCikkszam).set(data);
+        toast('Nyomás módosítva!');
+        closeEditModal();
+        showDetail(currentEditCikkszam);
+    } catch (err) {
+        toast('Hiba: ' + err.message, 'error');
+    }
+}
+
+// ============================================
+// DELETE
+// ============================================
+async function deleteTermek(cikkszam, nev) {
+    if (!isAdmin) return;
+    if (!confirm(`Biztosan törlöd: ${nev} (${cikkszam})?`)) return;
+
+    try {
+        await db.collection('termekek').doc(cikkszam).delete();
+        toast(`Törölve: ${nev}`);
+        searchProducts();
+        document.getElementById('detailPanel').innerHTML = '';
+    } catch (err) {
+        toast('Hiba: ' + err.message, 'error');
+    }
+}
+
+// ============================================
+// EXPORT / IMPORT
+// ============================================
+async function exportData() {
+    try {
+        const snapshot = await db.collection('termekek').get();
+        const data = {};
+        snapshot.forEach(doc => { data[doc.id] = doc.data(); });
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `nyomtatasi_adatok_${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        toast('Export kész!');
+    } catch (err) {
+        toast('Export hiba: ' + err.message, 'error');
+    }
+}
+
+async function importData(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    if (!confirm('Ez felülírja a meglévő adatokat azonos cikkszámnál. Folytatod?')) return;
+
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const batch = db.batch();
+
+        Object.keys(data).forEach(key => {
+            const ref = db.collection('termekek').doc(key);
+            batch.set(ref, data[key], { merge: true });
+        });
+
+        await batch.commit();
+        toast(`Import kész! (${Object.keys(data).length} termék)`);
+    } catch (err) {
+        toast('Import hiba: ' + err.message, 'error');
+    }
+
+    event.target.value = '';
+}
+</script>
+
+</body>
+</html>
